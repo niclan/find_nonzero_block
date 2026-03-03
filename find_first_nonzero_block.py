@@ -172,13 +172,17 @@ def find_first_nonzero_block(device_path):
             print("First block is non-zero - disk is not zeroed at all.")
             return 0, device_size
 
-        # First, check the last block - if it's zero, the whole disk is zeroed
+        # First, check the last block - if it's zero, the whole disk
+        # is zeroed This is a quick check to avoid unnecessary binary
+        # search on fully zeroed disks and for paranoias sake also
+        # check the middle block in case it's quite unlikely that the
+        # last block was ever written to.
         last_block = total_blocks - 1
-        if is_block_zeroed(fd, last_block):
+        if is_block_zeroed(fd, last_block) and is_block_zeroed(fd, last_block // 2):
             print("Last block is zero - entire disk is zeroed.")
-            return None
+            return (None, device_size)
 
-        print(f"Last block is non-zero. Searching for first non-zero block...")
+        print("Last block is non-zero. Searching for first non-zero block...")
 
         # Binary search for the first non-zero block
         left = 0
@@ -210,7 +214,7 @@ def find_first_nonzero_block(device_path):
             # Show a preview of the data
             os.lseek(fd, result * BLOCK_SIZE, os.SEEK_SET)
             preview_data = os.read(fd, min(64, BLOCK_SIZE))
-            print(f"\nFirst 64 bytes of the block:")
+            print("\nFirst 64 bytes of the block:")
             print("  " + " ".join(f"{b:02x}" for b in preview_data[:32]))
             print("  " + " ".join(f"{b:02x}" for b in preview_data[32:64]))
 
@@ -228,6 +232,7 @@ def find_first_nonzero_block(device_path):
 
 
 def main():
+    """Check if device is in use, then find the first non-zero block."""
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <device_path>")
         print(f"Example: {sys.argv[0]} /dev/sda")
