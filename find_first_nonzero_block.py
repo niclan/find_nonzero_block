@@ -132,6 +132,11 @@ def is_block_zeroed(fd, block_num):
 
     block_data = os.read(fd, BLOCK_SIZE)
 
+    # Verify we read the full block
+    if len(block_data) != BLOCK_SIZE:
+        raise IOError(f"Failed to read full block {block_num}: "
+                      f"got {len(block_data)} bytes, expected {BLOCK_SIZE}")
+
     # Check if all bytes are zero
     return all(byte == 0 for byte in block_data)
 
@@ -147,7 +152,7 @@ def find_first_nonzero_block(device_path):
     try:
         fd = os.open(device_path, os.O_RDONLY)
     except PermissionError:
-        print(f"Error: Permission denied. Try running with sudo.", file=sys.stderr)
+        print( "Error: Permission denied. Try running with sudo.", file=sys.stderr)
         sys.exit(1)
     except FileNotFoundError:
         print(f"Error: Device {device_path} not found.", file=sys.stderr)
@@ -163,12 +168,22 @@ def find_first_nonzero_block(device_path):
         print(f"Total 4K blocks: {total_blocks:,}")
         print()
 
-        # Binary search
+        if not is_block_zeroed(fd, 0):
+            print("First block is non-zero - disk is not zeroed at all.")
+            return 0, device_size
+
+        # First, check the last block - if it's zero, the whole disk is zeroed
+        last_block = total_blocks - 1
+        if is_block_zeroed(fd, last_block):
+            print("Last block is zero - entire disk is zeroed.")
+            return None
+
+        print(f"Last block is non-zero. Searching for first non-zero block...")
+
+        # Binary search for the first non-zero block
         left = 0
         right = total_blocks - 1
         result = None
-
-        print("Searching for first non-zero block...")
 
         while left <= right:
             mid = (left + right) // 2
@@ -186,9 +201,7 @@ def find_first_nonzero_block(device_path):
 
         print()  # Clear the progress line
 
-        if result is None:
-            print("All blocks are zeroed.")
-        else:
+        if result is not None:
             print( "\nFirst non-zero block found:")
             print(f"  Block number: {result:,}")
             print(f"  Byte offset: {result * BLOCK_SIZE:,}")
@@ -208,7 +221,7 @@ def find_first_nonzero_block(device_path):
             print(f"  sudo dd if=/dev/zero of={device_path} bs=4096 seek={result} status=progress")
             print(f"\nThis will write {remaining_bytes:,} bytes ({remaining_bytes / (1024**3):.2f} GB)")
 
-        return result
+        return result, device_size
 
     finally:
         os.close(fd)
@@ -231,11 +244,35 @@ def main():
         for warning in warnings:
             print(f"  ⚠️  {warning}")
         print()
+
+        # If there's a filesystem signature, the disk is definitely not zeroed
+        if any("filesystem signature" in warning for warning in warnings):
+            print("Device has a filesystem signature - disk is NOT zeroed.")
+
+        result = 0
+        device_size = get_device_size(os.open(device_path, os.O_RDONLY))
+
+    else:
         print("Proceeding with READ-ONLY scan. DO NOT run the dd command without")
         print("ensuring the device is not in use and data loss is acceptable.")
         print()
+        (result, device_size) = find_first_nonzero_block(device_path)
 
-    find_first_nonzero_block(device_path)
+    if result is not None:
+        print( "\nFirst non-zero block found:")
+        print(f"  Block number: {result:,}")
+        print(f"  Byte offset: {result * BLOCK_SIZE:,}")
+        print(f"  Position: {result * BLOCK_SIZE / (1024**3):.6f} GB")
+
+        # Print dd command to zero from this point onwards
+        byte_offset = result * BLOCK_SIZE
+        remaining_bytes = device_size - byte_offset
+        print( "\nTo zero from this block onwards, run:")
+        print(f"  sudo dd if=/dev/zero of={device_path} bs=4096 seek={result} status=progress")
+        print(f"\nThis will write {remaining_bytes:,} bytes ({remaining_bytes / (1024**3):.2f} GB)")
+
+    else:
+        print("All blocks are zeroed. No non-zero blocks found.")
 
 
 if __name__ == "__main__":
